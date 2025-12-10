@@ -1,7 +1,7 @@
 // キャッシュ名とキャッシュ対象のファイルリスト
 const CACHE_NAME = 'snowflake-designer-v1';
 const urlsToCache = [
-    './snowflake_designer.html',
+    './index.html',
     './manifest.json',
     'https://cdn.tailwindcss.com' // 外部リソースもキャッシュ
 ];
@@ -58,3 +58,4 @@ self.addEventListener('activate', (event) => {
         })
     );
 });
+
