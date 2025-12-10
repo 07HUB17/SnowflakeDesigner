@@ -4,8 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>雪の結晶デザイナー (Web版)</title>
+    
     <!-- PWA: Web App Manifestをリンク -->
     <link rel="manifest" href="manifest.json">
+    <!-- PWA: テーマカラーの指定 (マニフェストと合わせて設定) -->
+    <meta name="theme-color" content="#ffffff">
+
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -48,14 +52,10 @@
 
     <h1 class="text-3xl font-bold text-gray-800 mb-6 text-center">雪の結晶デザイナー</h1>
     
-    <!-- flex-grow で残りのスペースを全て占める -->
     <div id="app-container" class="flex flex-col lg:flex-row gap-6 flex-grow">
         
-        <!-- 左パネル: 作画キャンバスとコントロール -->
-        <!-- flex-col flex-grow で縦に要素を並べ、キャンバスコンテナが残りの高さを埋める -->
         <div id="wedge-panel" class="lg:w-1/2 flex flex-col space-y-4 flex-grow">
             <h2 class="text-xl font-semibold text-gray-700 flex-shrink-0">1. 作画キャンバス (30度楔)</h2>
-            <!-- キャンバスの高さを動的に設定するためのコンテナ -->
             <div id="wedge-container" class="canvas-container bg-red-50">
                 <canvas id="wedge-canvas"></canvas>
             </div>
@@ -69,24 +69,33 @@
             </div>
         </div>
 
-        <!-- 右パネル: プレビューキャンバス -->
         <div id="preview-panel" class="lg:w-1/2 flex flex-col space-y-4 flex-grow">
             <h2 class="text-xl font-semibold text-gray-700 flex-shrink-0">2. リアルタイムプレビュー (6回対称)</h2>
-            <!-- キャンバスの高さを動的に設定するためのコンテナ -->
             <div id="preview-container" class="canvas-container bg-gray-800">
                 <canvas id="preview-canvas"></canvas>
             </div>
-            <!-- 高さを合わせるためのスペーサー -->
             <div class="h-[40px] flex-shrink-0 hidden lg:block">
-                <!-- デスクトップでボタンの高さ分のスペースを確保 -->
             </div>
         </div>
 
     </div>
 
     <script>
-        // PWA: Service Workerの登録（コメントアウトは維持）
-        /* (PWA Service Worker registration code remains unchanged) */
+        // PWA: Service Workerの登録
+        // GitHub PagesなどのHTTPS環境にデプロイされたら有効になります
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                // service-worker.jsを登録
+                navigator.serviceWorker.register('service-worker.js')
+                    .then(registration => {
+                        console.log('Service Worker registered:', registration.scope);
+                    })
+                    .catch(error => {
+                        console.error('Service Worker registration failed:', error);
+                    });
+            });
+        }
+        
 
         // PySide6版のロジックをJavaScriptで再現します
         const WEDGE_CANVAS = document.getElementById('wedge-canvas');
@@ -204,7 +213,7 @@
         };
         
         // ---------------------------------------------------------
-        //  描画処理 (変更なし)
+        //  描画処理
         // ---------------------------------------------------------
 
         const drawWedge = () => {
@@ -213,7 +222,6 @@
             WEDGE_CTX.fillStyle = 'rgb(255, 245, 245)';
             WEDGE_CTX.fillRect(0, 0, WEDGE_CANVAS.width, WEDGE_CANVAS.height);
 
-            // 1. ガイドの描画（画面座標）
             if (wedgePolygon.length > 0) {
                 WEDGE_CTX.beginPath();
                 WEDGE_CTX.moveTo(wedgePolygon[0].x, wedgePolygon[0].y);
@@ -238,7 +246,6 @@
                 WEDGE_CTX.stroke();
             }
 
-            // 2. ユーザーの描いた線の描画（座標変換 + クリッピング）
             WEDGE_CTX.beginPath();
             WEDGE_CTX.moveTo(wedgePolygon[0].x, wedgePolygon[0].y);
             WEDGE_CTX.lineTo(wedgePolygon[1].x, wedgePolygon[1].y);
@@ -358,12 +365,10 @@
 
 
         // ---------------------------------------------------------
-        //  イベントハンドラ (変更なし)
+        //  イベントハンドラ
         // ---------------------------------------------------------
 
-        // マウス/タッチイベントハンドラは、以前のバージョンと変更ありません。
-
-        // ... (イベントハンドラ部分を省略。以前のコードをそのまま使ってください) ...
+        // マウスダウン
         WEDGE_CANVAS.addEventListener('mousedown', (e) => {
             const rect = WEDGE_CANVAS.getBoundingClientRect();
             const screenPos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -390,6 +395,7 @@
             drawAll();
         });
 
+        // マウス移動
         WEDGE_CANVAS.addEventListener('mousemove', (e) => {
             if (!isDrawing || !currentPath) return;
 
@@ -417,6 +423,7 @@
             drawAll();
         });
 
+        // マウスアップ/マウスアウト
         const stopDrawing = () => {
             if (isDrawing) {
                 isDrawing = false;
@@ -428,6 +435,7 @@
         WEDGE_CANVAS.addEventListener('mouseup', stopDrawing);
         WEDGE_CANVAS.addEventListener('mouseleave', stopDrawing);
         
+        // タッチイベントの追加
         WEDGE_CANVAS.addEventListener('touchstart', (e) => {
             e.preventDefault(); 
             const touch = e.touches[0];
@@ -444,6 +452,7 @@
 
         WEDGE_CANVAS.addEventListener('touchend', stopDrawing);
 
+        // Undoボタン
         document.getElementById('undo-btn').addEventListener('click', () => {
             if (modelPaths.length > 0) {
                 modelPaths.pop();
@@ -452,6 +461,7 @@
             }
         });
 
+        // Clearボタン
         document.getElementById('clear-btn').addEventListener('click', () => {
             modelPaths = [];
             currentPath = null;
@@ -459,8 +469,6 @@
             initialWedgeLength = 0;
             drawAll();
         });
-        
-        // ---------------------------------------------------------
         
         // ウィンドウリサイズイベント
         window.addEventListener('resize', resizeCanvases);
