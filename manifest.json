@@ -2,7 +2,7 @@
   "name": "雪の結晶デザイナー",
   "short_name": "Snowflake Designer",
   "description": "リアルタイムプレビュー機能付きの雪の結晶デザインツール",
-  "start_url": "./snowflake_designer.html",
+  "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#d6bcfa",
@@ -19,4 +19,5 @@
     }
     // ... その他のPNGアイコン ...
   ]
+
 }
