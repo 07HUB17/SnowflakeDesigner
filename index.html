@@ -10,12 +10,18 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* カスタムスタイル */
-        body { font-family: 'Inter', sans-serif; background-color: #f7f7f7; }
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #f7f7f7; 
+            /* ヘッダーやフッターのスペースを考慮し、画面全体の高さを使う */
+            min-height: 100vh;
+        }
         .canvas-container {
-            flex-grow: 1;
-            min-width: 300px;
-            min-height: 500px;
             position: relative;
+            /* Flexアイテムとして残りのスペースを占める */
+            flex-grow: 1;
+            /* 高さが設定されるまでの一時的な最小値 */
+            min-height: 300px; 
         }
         canvas {
             display: block;
@@ -33,15 +39,18 @@
 
     <h1 class="text-3xl font-bold text-gray-800 mb-6 text-center">雪の結晶デザイナー</h1>
     
-    <div id="app-container" class="flex flex-col lg:flex-row gap-6 flex-grow">
+    <!-- ここに 'lg:h-[calc(100vh-120px)]' を追加し、縦方向に高さを制限 -->
+    <!-- 120pxはヘッダー(H1)と上下のパディングを概算した値 -->
+    <div id="app-container" class="flex flex-col lg:flex-row gap-6 flex-grow lg:h-[calc(100vh-120px)]">
         
         <!-- 左パネル: 作画キャンバスとコントロール -->
-        <div class="lg:w-1/2 flex flex-col space-y-4">
+        <div id="wedge-panel" class="lg:w-1/2 flex flex-col space-y-4">
             <h2 class="text-xl font-semibold text-gray-700">1. 作画キャンバス (30度楔)</h2>
+            <!-- キャンバスの高さを動的に設定するためのコンテナ -->
             <div id="wedge-container" class="canvas-container bg-red-50">
                 <canvas id="wedge-canvas"></canvas>
             </div>
-            <div class="flex gap-4">
+            <div class="flex gap-4 flex-shrink-0">
                 <button id="undo-btn" class="flex-1 px-4 py-2 bg-yellow-500 text-white font-semibold rounded-lg hover:bg-yellow-600 transition duration-150 shadow-md">
                     一つ戻す (Undo)
                 </button>
@@ -52,10 +61,17 @@
         </div>
 
         <!-- 右パネル: プレビューキャンバス -->
-        <div class="lg:w-1/2 flex flex-col space-y-4">
+        <div id="preview-panel" class="lg:w-1/2 flex flex-col space-y-4">
             <h2 class="text-xl font-semibold text-gray-700">2. リアルタイムプレビュー (6回対称)</h2>
+            <!-- キャンバスの高さを動的に設定するためのコンテナ -->
             <div id="preview-container" class="canvas-container bg-gray-800">
                 <canvas id="preview-canvas"></canvas>
+            </div>
+            <!-- モバイルでボタンと高さを揃えるためのスペーサー/コントロールがない場合は空のスペースを確保 -->
+            <div class="flex gap-4 flex-shrink-0 invisible lg:visible">
+                <!-- ここにダミーボタンを配置して高さを合わせる、またはJSで高さを揃える -->
+                <button class="flex-1 px-4 py-2 invisible" disabled></button>
+                <button class="flex-1 px-4 py-2 invisible" disabled></button>
             </div>
         </div>
 
@@ -79,7 +95,6 @@
         }
         
 
-
         // PySide6版のロジックをJavaScriptで再現します
         const WEDGE_CANVAS = document.getElementById('wedge-canvas');
         const PREVIEW_CANVAS = document.getElementById('preview-canvas');
@@ -87,6 +102,8 @@
         const PREVIEW_CTX = PREVIEW_CANVAS.getContext('2d');
         const WEDGE_CONTAINER = document.getElementById('wedge-container');
         const PREVIEW_CONTAINER = document.getElementById('preview-container');
+        const WEDGE_PANEL = document.getElementById('wedge-panel');
+        const PREVIEW_PANEL = document.getElementById('preview-panel');
 
         // --- モデル（データ） ---
         let modelPaths = []; // { points: [{x, y}], initialLength: number } の配列
@@ -114,11 +131,51 @@
          * 画面上のリサイズイベントと初期化処理
          */
         const resizeCanvases = () => {
+            // --- モバイルフレンドリーな高さ調整 ---
+            // モバイル時は画面全体の利用可能なスペースを計算し、均等に分割
+            const windowHeight = window.innerHeight;
+            const headerHeight = document.querySelector('h1').offsetHeight;
+            const paddingHeight = 32 * 2; // p-8 (32px)
+            const gapHeight = 24; // gap-6 (24px)
+            
+            // コントロール（ボタン）部分の高さも計算
+            const controlsHeight = document.getElementById('undo-btn').parentNode.offsetHeight; 
+            
+            // 利用可能な描画領域の高さ
+            const availableHeight = windowHeight - headerHeight - paddingHeight - gapHeight;
+
+            // 各パネルの H2 + コントロール部分以外の高さをキャンバスに割り当てる
+            const h2Height = document.querySelector('#wedge-panel h2').offsetHeight;
+            
+            let panelHeight;
+
+            if (window.innerWidth < 1024) { // モバイル/タブレット (lgブレークポイント未満)
+                // 垂直配置: 描画エリアとプレビューエリアに利用可能な高さを均等に分割
+                const maxCanvasHeight = (availableHeight - (h2Height * 2) - controlsHeight) / 2;
+                
+                // キャンバスコンテナの高さを設定（スクロールを防ぐ）
+                WEDGE_CONTAINER.style.height = `${maxCanvasHeight}px`;
+                PREVIEW_CONTAINER.style.height = `${maxCanvasHeight}px`;
+
+                panelHeight = maxCanvasHeight;
+
+            } else { // デスクトップ (lgブレークポイント以上)
+                // 水平配置: パネルの高さに基づいて自動的に調整される
+                const appContainerHeight = document.getElementById('app-container').clientHeight;
+                const desktopCanvasHeight = appContainerHeight - h2Height - controlsHeight;
+                
+                WEDGE_CONTAINER.style.height = `${desktopCanvasHeight}px`;
+                PREVIEW_CONTAINER.style.height = `${desktopCanvasHeight}px`;
+
+                panelHeight = desktopCanvasHeight;
+            }
+
+            // --- キャンバスのサイズ設定 ---
             const W_WEDGE = WEDGE_CONTAINER.clientWidth;
             const H_WEDGE = WEDGE_CONTAINER.clientHeight;
             const W_PREVIEW = PREVIEW_CONTAINER.clientWidth;
             const H_PREVIEW = PREVIEW_CONTAINER.clientHeight;
-
+            
             // Canvas要素の実際の解像度を設定
             WEDGE_CANVAS.width = W_WEDGE;
             WEDGE_CANVAS.height = H_WEDGE;
