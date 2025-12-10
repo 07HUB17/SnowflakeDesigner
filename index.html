@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>雪の結晶デザイナー (Web版)</title>
+    <!-- PWA: Web App Manifestをリンク -->
+    <link rel="manifest" href="manifest.json">
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* カスタムスタイル */
+        body { font-family: 'Inter', sans-serif; background-color: #f7f7f7; }
+        .canvas-container {
+            flex-grow: 1;
+            min-width: 300px;
+            min-height: 500px;
+            position: relative;
+        }
+        canvas {
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8 min-h-screen flex flex-col">
+
+    <h1 class="text-3xl font-bold text-gray-800 mb-6 text-center">雪の結晶デザイナー</h1>
+    
+    <div id="app-container" class="flex flex-col lg:flex-row gap-6 flex-grow">
+        
+        <!-- 左パネル: 作画キャンバスとコントロール -->
+        <div class="lg:w-1/2 flex flex-col space-y-4">
+            <h2 class="text-xl font-semibold text-gray-700">1. 作画キャンバス (30度楔)</h2>
+            <div id="wedge-container" class="canvas-container bg-red-50">
+                <canvas id="wedge-canvas"></canvas>
+            </div>
+            <div class="flex gap-4">
+                <button id="undo-btn" class="flex-1 px-4 py-2 bg-yellow-500 text-white font-semibold rounded-lg hover:bg-yellow-600 transition duration-150 shadow-md">
+                    一つ戻す (Undo)
+                </button>
+                <button id="clear-btn" class="flex-1 px-4 py-2 bg-red-500 text-white font-semibold rounded-lg hover:bg-red-600 transition duration-150 shadow-md">
+                    全てクリア (Clear)
+                </button>
+            </div>
+        </div>
+
+        <!-- 右パネル: プレビューキャンバス -->
+        <div class="lg:w-1/2 flex flex-col space-y-4">
+            <h2 class="text-xl font-semibold text-gray-700">2. リアルタイムプレビュー (6回対称)</h2>
+            <div id="preview-container" class="canvas-container bg-gray-800">
+                <canvas id="preview-canvas"></canvas>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // PWA: Service Workerの登録
+        // 開発環境でプロトコルエラーが発生するため、一旦コメントアウトします。
+        // 本番のHTTPS環境でService Workerを使用する際は、このコメントアウトを解除してください。
+        
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('service-worker.js')
+                    .then(registration => {
+                        console.log('Service Worker registered:', registration);
+                    })
+                    .catch(error => {
+                        console.error('Service Worker registration failed:', error);
+                    });
+            });
+        }
+        
+
+
+        // PySide6版のロジックをJavaScriptで再現します
+        const WEDGE_CANVAS = document.getElementById('wedge-canvas');
+        const PREVIEW_CANVAS = document.getElementById('preview-canvas');
+        const WEDGE_CTX = WEDGE_CANVAS.getContext('2d');
+        const PREVIEW_CTX = PREVIEW_CANVAS.getContext('2d');
+        const WEDGE_CONTAINER = document.getElementById('wedge-container');
+        const PREVIEW_CONTAINER = document.getElementById('preview-container');
+
+        // --- モデル（データ） ---
+        let modelPaths = []; // { points: [{x, y}], initialLength: number } の配列
+        let currentPath = null;
+        let isDrawing = false;
+        let initialWedgeLength = 0; // 描画開始時の楔の長さ（リサイズ追従の基準）
+
+        // --- 画面表示パラメータ ---
+        let wedgePivot = { x: 0, y: 0 };
+        let wedgeLength = 0;
+        let wedgePolygon = []; // クリッピング用ポリゴン（画面座標）
+
+        // ---------------------------------------------------------
+        //  ユーティリティ関数
+        // ---------------------------------------------------------
+
+        /**
+         * 度をラジアンに変換
+         * @param {number} degrees 
+         * @returns {number}
+         */
+        const toRadians = (degrees) => degrees * (Math.PI / 180);
+
+        /**
+         * 画面上のリサイズイベントと初期化処理
+         */
+        const resizeCanvases = () => {
+            const W_WEDGE = WEDGE_CONTAINER.clientWidth;
+            const H_WEDGE = WEDGE_CONTAINER.clientHeight;
+            const W_PREVIEW = PREVIEW_CONTAINER.clientWidth;
+            const H_PREVIEW = PREVIEW_CONTAINER.clientHeight;
+
+            // Canvas要素の実際の解像度を設定
+            WEDGE_CANVAS.width = W_WEDGE;
+            WEDGE_CANVAS.height = H_WEDGE;
+            PREVIEW_CANVAS.width = W_PREVIEW;
+            PREVIEW_CANVAS.height = H_PREVIEW;
+
+            // --- WedgeCanvasの配置ロジック (PySide6のresizeEvent再現) ---
+            
+            // 1. 画面上の配置決定
+            wedgeLength = H_WEDGE * 0.90;
+            const maxHalfWidth = wedgeLength * Math.sin(toRadians(15));
+
+            // PivotのX座標: 左に偏っていたのを修正し、楔が中央に来るように調整
+            const pivotX = W_WEDGE * 0.5 + maxHalfWidth * 0.5;
+            const pivotY = H_WEDGE * 0.95; 
+            wedgePivot = { x: pivotX, y: pivotY };
+
+            // 2. クリッピング用多角形作成（画面座標）
+            // 右辺（基準線）を真上(-90度)とする
+            const pTopX = wedgePivot.x + wedgeLength * Math.cos(toRadians(-90));
+            const pTopY = wedgePivot.y + wedgeLength * Math.sin(toRadians(-90));
+            const pLeftX = wedgePivot.x + wedgeLength * Math.cos(toRadians(-90 - 30));
+            const pLeftY = wedgePivot.y + wedgeLength * Math.sin(toRadians(-90 - 30));
+            
+            wedgePolygon = [
+                wedgePivot,
+                { x: pLeftX, y: pLeftY },
+                { x: pTopX, y: pTopY }
+            ];
+
+            drawAll();
+        };
+
+        /**
+         * モデル座標(0,0基準) -> スクリーン座標(画面上の位置) への変換行列を作成
+         * PySide6の get_model_to_screen_transform() に相当
+         * @param {number} scaleFactor
+         * @returns {number[]} 変換行列 [a, b, c, d, e, f]
+         */
+        const getModelToScreenTransform = (scaleFactor) => {
+            const { x: px, y: py } = wedgePivot;
+            
+            // 1. 回転角度 (-90度: 真上向き)
+            const angleRad = toRadians(-90);
+            const cosA = Math.cos(angleRad);
+            const sinA = Math.sin(angleRad);
+
+            // 2. スケール
+            const S = scaleFactor;
+
+            // 3. 平行移動
+            const Tx = px;
+            const Ty = py;
+            
+            // Web Canvasの setTransform(a, b, c, d, e, f)
+            // 変換順序: scale -> rotate -> translate に対応させる
+
+            return [
+                S * cosA,  // a (m11)
+                S * sinA,  // b (m21)
+                -S * sinA, // c (m12)
+                S * cosA,  // d (m22)
+                Tx,        // e (dx)
+                Ty         // f (dy)
+            ];
+        };
+
+        /**
+         * スクリーン座標をモデル座標に逆変換する
+         * PySide6の map_screen_to_model() に相当
+         * @param {{x: number, y: number}} screenPos 
+         * @returns {{x: number, y: number}}
+         */
+        const mapScreenToModel = (screenPos) => {
+            // パスを記録する時点では、スケールは 1.0 として扱う
+            const [a, b, c, d, e, f] = getModelToScreenTransform(1.0);
+            
+            // 逆行列の計算
+            const det = a * d - b * c;
+            if (det === 0) return { x: 0, y: 0 }; // 変換不能
+
+            const invDet = 1 / det;
+            const invA = d * invDet;
+            const invB = -b * invDet;
+            const invC = -c * invDet;
+            const invD = a * invDet;
+            const invE = (c * f - d * e) * invDet;
+            const invF = (b * e - a * f) * invDet;
+
+            const x = screenPos.x;
+            const y = screenPos.y;
+
+            // 逆変換の適用
+            const modelX = invA * x + invC * y + invE;
+            const modelY = invB * x + invD * y + invF;
+
+            return { x: modelX, y: modelY };
+        };
+        
+        // ---------------------------------------------------------
+        //  WedgeCanvasの描画処理
+        // ---------------------------------------------------------
+
+        const drawWedge = () => {
+            WEDGE_CTX.save();
+            WEDGE_CTX.clearRect(0, 0, WEDGE_CANVAS.width, WEDGE_CANVAS.height);
+            WEDGE_CTX.fillStyle = 'rgb(255, 245, 245)';
+            WEDGE_CTX.fillRect(0, 0, WEDGE_CANVAS.width, WEDGE_CANVAS.height);
+
+            // 1. ガイドの描画（画面座標）
+            if (wedgePolygon.length > 0) {
+                // 楔領域の塗りつぶしと点線境界
+                WEDGE_CTX.beginPath();
+                WEDGE_CTX.moveTo(wedgePolygon[0].x, wedgePolygon[0].y);
+                WEDGE_CTX.lineTo(wedgePolygon[1].x, wedgePolygon[1].y);
+                WEDGE_CTX.lineTo(wedgePolygon[2].x, wedgePolygon[2].y);
+                WEDGE_CTX.closePath();
+                
+                WEDGE_CTX.fillStyle = 'rgba(255, 200, 200, 0.4)';
+                WEDGE_CTX.fill();
+                
+                WEDGE_CTX.strokeStyle = 'gray';
+                WEDGE_CTX.lineWidth = 2;
+                WEDGE_CTX.setLineDash([5, 5]);
+                WEDGE_CTX.stroke();
+                
+                // 中心線（赤、実線）
+                WEDGE_CTX.beginPath();
+                WEDGE_CTX.moveTo(wedgePolygon[0].x, wedgePolygon[0].y); // Pivot
+                WEDGE_CTX.lineTo(wedgePolygon[2].x, wedgePolygon[2].y); // Top
+                WEDGE_CTX.strokeStyle = 'red';
+                WEDGE_CTX.lineWidth = 2;
+                WEDGE_CTX.setLineDash([]);
+                WEDGE_CTX.stroke();
+            }
+
+            // 2. ユーザーの描いた線の描画（座標変換 + クリッピング）
+
+            // クリッピング領域を設定
+            WEDGE_CTX.beginPath();
+            WEDGE_CTX.moveTo(wedgePolygon[0].x, wedgePolygon[0].y);
+            WEDGE_CTX.lineTo(wedgePolygon[1].x, wedgePolygon[1].y);
+            WEDGE_CTX.lineTo(wedgePolygon[2].x, wedgePolygon[2].y);
+            WEDGE_CTX.closePath();
+            WEDGE_CTX.clip();
+
+            // スケールファクターの計算
+            const currentLength = wedgeLength;
+            const baseLength = initialWedgeLength > 0 ? initialWedgeLength : currentLength;
+            const scaleFactor = baseLength > 0 ? currentLength / baseLength : 1.0;
+
+            // 座標変換の適用
+            const transform = getModelToScreenTransform(scaleFactor);
+            WEDGE_CTX.setTransform(...transform);
+
+            // 線の太さ（見た目の太さを一定に保つ）
+            const penWidth = 3 / scaleFactor;
+            WEDGE_CTX.strokeStyle = 'black';
+            WEDGE_CTX.lineWidth = penWidth;
+            WEDGE_CTX.lineCap = 'round';
+            WEDGE_CTX.lineJoin = 'round';
+            
+            // パスの描画
+            [...modelPaths, currentPath].filter(p => p).forEach(path => {
+                WEDGE_CTX.beginPath();
+                path.points.forEach((p, index) => {
+                    if (index === 0) {
+                        WEDGE_CTX.moveTo(p.x, p.y);
+                    } else {
+                        WEDGE_CTX.lineTo(p.x, p.y);
+                    }
+                });
+                WEDGE_CTX.stroke();
+            });
+
+            WEDGE_CTX.restore();
+        };
+        
+        // ---------------------------------------------------------
+        //  PreviewCanvasの描画処理
+        // ---------------------------------------------------------
+
+        const drawPreview = () => {
+            PREVIEW_CTX.save();
+            PREVIEW_CTX.clearRect(0, 0, PREVIEW_CANVAS.width, PREVIEW_CANVAS.height);
+            PREVIEW_CTX.fillStyle = 'rgb(30, 40, 60)';
+            PREVIEW_CTX.fillRect(0, 0, PREVIEW_CANVAS.width, PREVIEW_CANVAS.height);
+
+            if (modelPaths.length === 0 && !currentPath) {
+                PREVIEW_CTX.restore();
+                return;
+            }
+
+            const W = PREVIEW_CANVAS.width;
+            const H = PREVIEW_CANVAS.height;
+            const dstCenter = { x: W * 0.5, y: H * 0.5 };
+            
+            // スケール基準の長さ
+            const snowBaseLength = initialWedgeLength > 0 ? initialWedgeLength : wedgeLength;
+            
+            // プレビューで使う最大の半径
+            const availableSpace = Math.min(W, H);
+            const viewRadius = availableSpace * 0.5 * 0.90; 
+            const scaleFactor = snowBaseLength > 0 ? viewRadius / snowBaseLength : 1.0;
+
+            // 線の太さ（見た目の太さを一定に保つ）
+            const penWidth = 3 / scaleFactor;
+            PREVIEW_CTX.strokeStyle = 'white';
+            PREVIEW_CTX.lineWidth = penWidth;
+            PREVIEW_CTX.lineCap = 'round';
+            PREVIEW_CTX.lineJoin = 'round';
+
+            // 6. 雪の結晶の展開アルゴリズムを実行
+            const pathsToDraw = [...modelPaths, currentPath].filter(p => p);
+
+            for (let i = 0; i < 6; i++) {
+                const angleDeg = i * 60.0;
+                
+                // --- 1. 基本の枝（正回転） ---
+                PREVIEW_CTX.save();
+                
+                // 1. 中心に移動
+                PREVIEW_CTX.translate(dstCenter.x, dstCenter.y);
+                // 2. 6分割の回転
+                PREVIEW_CTX.rotate(toRadians(angleDeg));
+                
+                // 3. モデル変換（スケール、-90度回転）
+                PREVIEW_CTX.rotate(toRadians(-90));
+                PREVIEW_CTX.scale(scaleFactor, scaleFactor);
+                
+                // パスの描画
+                pathsToDraw.forEach(path => {
+                    PREVIEW_CTX.beginPath();
+                    path.points.forEach((p, index) => {
+                        if (index === 0) {
+                            PREVIEW_CTX.moveTo(p.x, p.y);
+                        } else {
+                            PREVIEW_CTX.lineTo(p.x, p.y);
+                        }
+                    });
+                    PREVIEW_CTX.stroke();
+                });
+                PREVIEW_CTX.restore();
+
+
+                // --- 2. ミラーの枝（反転） ---
+                PREVIEW_CTX.save();
+                
+                // 1. 中心に移動
+                PREVIEW_CTX.translate(dstCenter.x, dstCenter.y);
+                // 2. 6分割の回転
+                PREVIEW_CTX.rotate(toRadians(angleDeg));
+
+                // 3. モデル変換（スケール、-90度回転）
+                PREVIEW_CTX.rotate(toRadians(-90));
+                PREVIEW_CTX.scale(scaleFactor, scaleFactor);
+
+                // ステップC: Y軸反転 (ミラーリング)
+                PREVIEW_CTX.scale(1, -1); 
+
+                // パスの描画
+                pathsToDraw.forEach(path => {
+                    PREVIEW_CTX.beginPath();
+                    path.points.forEach((p, index) => {
+                        if (index === 0) {
+                            PREVIEW_CTX.moveTo(p.x, p.y);
+                        } else {
+                            PREVIEW_CTX.lineTo(p.x, p.y);
+                        }
+                    });
+                    PREVIEW_CTX.stroke();
+                });
+                PREVIEW_CTX.restore();
+            }
+
+            PREVIEW_CTX.restore();
+        };
+
+        const drawAll = () => {
+            drawWedge();
+            drawPreview();
+        };
+
+
+        // ---------------------------------------------------------
+        //  イベントハンドラ
+        // ---------------------------------------------------------
+
+        // マウスダウン
+        WEDGE_CANVAS.addEventListener('mousedown', (e) => {
+            // クリック位置（画面座標）
+            const rect = WEDGE_CANVAS.getBoundingClientRect();
+            const screenPos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+            
+            // クリッピング領域内かチェック
+            const ptInPoly = (p, poly) => {
+                let inside = false;
+                for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                    const xi = poly[i].x, yi = poly[i].y;
+                    const xj = poly[j].x, yj = poly[j].y;
+                    
+                    const intersect = ((yi > p.y) !== (yj > p.y))
+                        && (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi);
+                    if (intersect) inside = !inside;
+                }
+                return inside;
+            };
+
+            if (!ptInPoly(screenPos, wedgePolygon)) {
+                return;
+            }
+
+            isDrawing = true;
+            
+            // 初めて描画するときに initialWedgeLength を記録
+            if (initialWedgeLength === 0) {
+                initialWedgeLength = wedgeLength;
+            }
+
+            // モデル座標を記録
+            const modelPos = mapScreenToModel(screenPos);
+            currentPath = { points: [modelPos] };
+            
+            // 既存のパスに追加（新しいパスの作成はmouseup/mouseleave時）
+            modelPaths.push(currentPath);
+
+            drawAll();
+        });
+
+        // マウス移動
+        WEDGE_CANVAS.addEventListener('mousemove', (e) => {
+            if (!isDrawing || !currentPath) return;
+
+            const rect = WEDGE_CANVAS.getBoundingClientRect();
+            const screenPos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+            
+            // クリッピング領域外に出たら、線の追加を停止する 
+            const ptInPoly = (p, poly) => {
+                let inside = false;
+                for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                    const xi = poly[i].x, yi = poly[i].y;
+                    const xj = poly[j].x, yj = poly[j].y;
+                    
+                    const intersect = ((yi > p.y) !== (yj > p.y))
+                        && (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi);
+                    if (intersect) inside = !inside;
+                }
+                return inside;
+            };
+
+            if (!ptInPoly(screenPos, wedgePolygon)) {
+                // 領域外に出た場合も描画を終了する
+                stopDrawing(); 
+                return;
+            }
+            
+            const modelPos = mapScreenToModel(screenPos);
+            currentPath.points.push(modelPos);
+            
+            drawAll();
+        });
+
+        // マウスアップ/マウスアウト
+        const stopDrawing = () => {
+            if (isDrawing) {
+                isDrawing = false;
+                currentPath = null;
+                drawAll();
+            }
+        };
+
+        WEDGE_CANVAS.addEventListener('mouseup', stopDrawing);
+        WEDGE_CANVAS.addEventListener('mouseleave', stopDrawing);
+        
+        // タッチイベントの追加 (モバイル対応)
+        WEDGE_CANVAS.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // スクロール防止
+            const touch = e.touches[0];
+            const mouseEvent = new MouseEvent('mousedown', {
+                clientX: touch.clientX,
+                clientY: touch.clientY
+            });
+            WEDGE_CANVAS.dispatchEvent(mouseEvent);
+        });
+
+        WEDGE_CANVAS.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const mouseEvent = new MouseEvent('mousemove', {
+                clientX: touch.clientX,
+                clientY: touch.clientY
+            });
+            WEDGE_CANVAS.dispatchEvent(mouseEvent);
+        });
+
+        WEDGE_CANVAS.addEventListener('touchend', stopDrawing);
+
+
+        // Undoボタン
+        document.getElementById('undo-btn').addEventListener('click', () => {
+            if (modelPaths.length > 0) {
+                modelPaths.pop();
+                if (modelPaths.length === 0) {
+                    // 全てのパスが削除されたら、リサイズ基準をリセット
+                    initialWedgeLength = 0;
+                }
+                drawAll();
+            }
+        });
+
+        // Clearボタン
+        document.getElementById('clear-btn').addEventListener('click', () => {
+            modelPaths = [];
+            currentPath = null;
+            isDrawing = false;
+            initialWedgeLength = 0;
+            drawAll();
+        });
+
+        // ウィンドウリサイズイベント
+        window.addEventListener('resize', resizeCanvases);
+
+        // 初期ロード
+        window.onload = resizeCanvases;
+
+    </script>
+</body>
+</html>
